@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/appscode/go/arrays"
 	"github.com/appscode/go/log"
 	hookapi "github.com/appscode/kubernetes-webhook-util/admission/v1beta1"
 	meta_util "github.com/appscode/kutil/meta"
@@ -35,6 +36,11 @@ var forbiddenEnvVars = []string{
 	"NODE_NAME",
 	"NODE_MASTER",
 	"NODE_DATA",
+}
+
+var supportedAuthPlugin = []api.ElasticsearchAuthPlugin{
+	api.ElasticsearchAuthPluginNone,
+	api.ElasticsearchAuthPluginSearchGuard,
 }
 
 func (a *ElasticsearchValidator) Resource() (plural schema.GroupVersionResource, singular string) {
@@ -89,8 +95,8 @@ func (a *ElasticsearchValidator) Admit(req *admission.AdmissionRequest) *admissi
 					break
 				}
 				return hookapi.StatusInternalServerError(err)
-			} else if err == nil && obj.Spec.DoNotPause {
-				return hookapi.StatusBadRequest(fmt.Errorf(`elasticsearch "%s" can't be paused. To continue delete, unset spec.doNotPause and retry`, req.Name))
+			} else if err == nil && obj.Spec.TerminationPolicy == api.TerminationPolicyDoNotTerminate {
+				return hookapi.StatusBadRequest(fmt.Errorf(`elasticsearch "%s" can't be paused. To delete, change spec.terminationPolicy`, req.Name))
 			}
 		}
 	default:
@@ -191,10 +197,6 @@ func ValidateElasticsearch(client kubernetes.Interface, extClient cs.Interface, 
 			return fmt.Errorf(`spec.replicas "%v" invalid. Must be greater than zero`, elasticsearch.Spec.Replicas)
 		}
 
-		if elasticsearch.Spec.Storage == nil {
-			return fmt.Errorf(`invalid Elasticsearch: "%v". spec.storage can't be nil`, elasticsearch.Name)
-		}
-
 		if err := amv.ValidateStorage(client, elasticsearch.Spec.StorageType, elasticsearch.Spec.Storage); err != nil {
 			return err
 		}
@@ -233,6 +235,12 @@ func ValidateElasticsearch(client kubernetes.Interface, extClient cs.Interface, 
 		return fmt.Errorf(`'spec.terminationPolicy' is missing`)
 	}
 
+	if elasticsearch.Spec.AuthPlugin == "" {
+		return fmt.Errorf(`'spec.authPlugin' is missing`)
+	} else if ok, _ := arrays.Contains(supportedAuthPlugin, elasticsearch.Spec.AuthPlugin); !ok {
+		return fmt.Errorf(`'spec.authPlugin: %s' is not supported`, elasticsearch.Spec.AuthPlugin)
+	}
+
 	monitorSpec := elasticsearch.Spec.Monitor
 	if monitorSpec != nil {
 		if err := amv.ValidateMonitorSpec(monitorSpec); err != nil {
@@ -266,9 +274,6 @@ func matchWithDormantDatabase(extClient cs.Interface, elasticsearch *api.Elastic
 	drmnOriginSpec := dormantDb.Spec.Origin.Spec.Elasticsearch
 	drmnOriginSpec.SetDefaults()
 	originalSpec := elasticsearch.Spec
-
-	// Skip checking doNotPause
-	drmnOriginSpec.DoNotPause = originalSpec.DoNotPause
 
 	// Skip checking UpdateStrategy
 	drmnOriginSpec.UpdateStrategy = originalSpec.UpdateStrategy
