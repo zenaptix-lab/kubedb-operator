@@ -52,7 +52,12 @@ func NewOperatorConfig(clientConfig *rest.Config) *OperatorConfig {
 }
 
 func (c *OperatorConfig) New() (*Controller, error) {
-	if err := discovery.IsDefaultSupportedVersion(c.KubeClient); err != nil {
+
+	var EmptyBlackListedVersions = map[string]error{}
+	if err := discovery.IsSupportedVersion(
+		c.KubeClient, discovery.DefaultConstraint,
+		EmptyBlackListedVersions,
+		EmptyBlackListedVersions); err != nil {
 		return nil, err
 	}
 
