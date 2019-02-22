@@ -31,15 +31,7 @@ func (c *Controller) create(memcached *api.Memcached) error {
 
 	// Delete Matching DormantDatabase if exists any
 	if err := c.deleteMatchingDormantDatabase(memcached); err != nil {
-		c.recorder.Eventf(
-			memcached,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			`Failed to delete dormant Database : "%v". Reason: %v`,
-			memcached.Name,
-			err,
-		)
-		return err
+		return fmt.Errorf(`failed to delete dormant Database : "%v/%v". Reason: %v`, memcached.Namespace, memcached.Name, err)
 	}
 
 	if memcached.Status.Phase == "" {
@@ -48,15 +40,16 @@ func (c *Controller) create(memcached *api.Memcached) error {
 			return in
 		}, apis.EnableStatusSubresource)
 		if err != nil {
-			c.recorder.Eventf(
-				memcached,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToUpdate,
-				err.Error(),
-			)
 			return err
 		}
 		memcached.Status = mc.Status
+	}
+
+	if c.EnableRBAC {
+		// Ensure ClusterRoles for deployments
+		if err := c.ensureRBACStuff(memcached); err != nil {
+			return err
+		}
 	}
 
 	// ensure database Service
@@ -93,12 +86,6 @@ func (c *Controller) create(memcached *api.Memcached) error {
 		return in
 	}, apis.EnableStatusSubresource)
 	if err != nil {
-		c.recorder.Eventf(
-			memcached,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToUpdate,
-			err.Error(),
-		)
 		return err
 	}
 	memcached.Status = mc.Status
@@ -112,7 +99,7 @@ func (c *Controller) create(memcached *api.Memcached) error {
 			"Failed to manage monitoring system. Reason: %v",
 			err,
 		)
-		log.Errorln(err)
+		log.Errorf("failed to manage monitoring system. Reason: %v", err)
 		return nil
 	}
 
@@ -124,10 +111,15 @@ func (c *Controller) create(memcached *api.Memcached) error {
 			"Failed to manage monitoring system. Reason: %v",
 			err,
 		)
-		log.Errorln(err)
+		log.Errorf("failed to manage monitoring system. Reason: %v", err)
 		return nil
 	}
 
+	_, err = c.ensureAppBinding(memcached)
+	if err != nil {
+		log.Errorln(err)
+		return err
+	}
 	return nil
 }
 
@@ -147,10 +139,10 @@ func (c *Controller) terminate(memcached *api.Memcached) error {
 					return err
 				}
 				if val, _ := meta_util.GetStringValue(ddb.Labels, api.LabelDatabaseKind); val != api.ResourceKindMemcached {
-					return fmt.Errorf(`DormantDatabase "%v" of kind %v already exists`, memcached.Name, val)
+					return fmt.Errorf(`DormantDatabase "%v/%v" of kind %v already exists`, memcached.Namespace, memcached.Name, val)
 				}
 			} else {
-				return fmt.Errorf(`failed to create DormantDatabase: "%v". Reason: %v`, memcached.Name, err)
+				return fmt.Errorf(`failed to create DormantDatabase: "%v/%v". Reason: %v`, memcached.Namespace, memcached.Name, err)
 			}
 		}
 	}

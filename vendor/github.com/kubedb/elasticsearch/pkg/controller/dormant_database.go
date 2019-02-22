@@ -33,6 +33,28 @@ func (c *Controller) WaitUntilPaused(drmn *api.DormantDatabase) error {
 		return err
 	}
 
+	if err := c.waitUntilRBACStuffDeleted(db); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Controller) waitUntilRBACStuffDeleted(elasticsearch *api.Elasticsearch) error {
+	// Delete ServiceAccount
+	if err := core_util.WaitUntillServiceAccountDeleted(c.Client, elasticsearch.ObjectMeta); err != nil {
+		return err
+	}
+
+	// Delete Snapshot ServiceAccount
+	snapSAMeta := metav1.ObjectMeta{
+		Name:      elasticsearch.SnapshotSAName(),
+		Namespace: elasticsearch.Namespace,
+	}
+	if err := core_util.WaitUntillServiceAccountDeleted(c.Client, snapSAMeta); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -43,7 +65,6 @@ func (c *Controller) WipeOutDatabase(drmn *api.DormantDatabase) error {
 	if rerr != nil {
 		return rerr
 	}
-
 	if err := c.wipeOutDatabase(drmn.ObjectMeta, drmn.GetDatabaseSecrets(), ref); err != nil {
 		return errors.Wrap(err, "error in wiping out database.")
 	}

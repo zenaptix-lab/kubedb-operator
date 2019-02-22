@@ -35,15 +35,7 @@ func (c *Controller) create(redis *api.Redis) error {
 
 	// Delete Matching DormantDatabase if exists any
 	if err := c.deleteMatchingDormantDatabase(redis); err != nil {
-		c.recorder.Eventf(
-			redis,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			`Failed to delete dormant Database : "%v". Reason: %v`,
-			redis.Name,
-			err,
-		)
-		return err
+		return fmt.Errorf(`failed to delete dormant Database : "%v/%v". Reason: %v`, redis.Namespace, redis.Name, err)
 	}
 
 	if redis.Status.Phase == "" {
@@ -52,12 +44,6 @@ func (c *Controller) create(redis *api.Redis) error {
 			return in
 		}, apis.EnableStatusSubresource)
 		if err != nil {
-			c.recorder.Eventf(
-				redis,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToUpdate,
-				err.Error(),
-			)
 			return err
 		}
 		redis.Status = rd.Status
@@ -66,15 +52,21 @@ func (c *Controller) create(redis *api.Redis) error {
 	// create Governing Service
 	governingService := c.GoverningService
 	if err := c.CreateGoverningService(governingService, redis.Namespace); err != nil {
-		c.recorder.Eventf(
-			redis,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			`Failed to create Service: "%v". Reason: %v`,
-			governingService,
-			err,
-		)
 		return err
+	}
+
+	// ensure ConfigMap for redis configuration file (i.e. redis.conf)
+	if redis.Spec.Mode == api.RedisModeCluster {
+		if err := c.ensureRedisConfig(redis); err != nil {
+			return err
+		}
+	}
+
+	if c.EnableRBAC {
+		// Ensure ClusterRoles for statefulsets
+		if err := c.ensureRBACStuff(redis); err != nil {
+			return err
+		}
 	}
 
 	// ensure database Service
@@ -84,7 +76,7 @@ func (c *Controller) create(redis *api.Redis) error {
 	}
 
 	// ensure database StatefulSet
-	vt2, err := c.ensureStatefulSet(redis)
+	vt2, err := c.ensureRedisNodes(redis)
 	if err != nil {
 		return err
 	}
@@ -130,7 +122,7 @@ func (c *Controller) create(redis *api.Redis) error {
 			"Failed to manage monitoring system. Reason: %v",
 			err,
 		)
-		log.Errorln(err)
+		log.Errorf("failed to manage monitoring system. Reason: %v", err)
 		return nil
 	}
 
@@ -142,10 +134,15 @@ func (c *Controller) create(redis *api.Redis) error {
 			"Failed to manage monitoring system. Reason: %v",
 			err,
 		)
-		log.Errorln(err)
+		log.Errorf("failed to manage monitoring system. Reason: %v", err)
 		return nil
 	}
 
+	_, err = c.ensureAppBinding(redis)
+	if err != nil {
+		log.Errorln(err)
+		return err
+	}
 	return nil
 }
 
@@ -173,10 +170,10 @@ func (c *Controller) terminate(redis *api.Redis) error {
 					return err
 				}
 				if val, _ := meta_util.GetStringValue(ddb.Labels, api.LabelDatabaseKind); val != api.ResourceKindRedis {
-					return fmt.Errorf(`DormantDatabase "%v" of kind %v already exists`, redis.Name, val)
+					return fmt.Errorf(`DormantDatabase "%v/%v" of kind %v already exists`, redis.Namespace, redis.Name, val)
 				}
 			} else {
-				return fmt.Errorf(`failed to create DormantDatabase: "%v". Reason: %v`, redis.Name, err)
+				return fmt.Errorf(`failed to create DormantDatabase: "%v/%v". Reason: %v`, redis.Namespace, redis.Name, err)
 			}
 		}
 	} else {

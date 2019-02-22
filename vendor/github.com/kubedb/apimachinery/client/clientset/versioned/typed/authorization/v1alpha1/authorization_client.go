@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The KubeDB Authors.
+Copyright 2019 The KubeDB Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,12 +27,10 @@ import (
 
 type AuthorizationV1alpha1Interface interface {
 	RESTClient() rest.Interface
+	DatabaseAccessRequestsGetter
 	MongoDBRolesGetter
-	MongoDBRoleBindingsGetter
 	MySQLRolesGetter
-	MySQLRoleBindingsGetter
 	PostgresRolesGetter
-	PostgresRoleBindingsGetter
 }
 
 // AuthorizationV1alpha1Client is used to interact with features provided by the authorization.kubedb.com group.
@@ -40,28 +38,20 @@ type AuthorizationV1alpha1Client struct {
 	restClient rest.Interface
 }
 
-func (c *AuthorizationV1alpha1Client) MongoDBRoles(namespace string) MongoDBRoleInterface {
-	return newMongoDBRoles(c, namespace)
+func (c *AuthorizationV1alpha1Client) DatabaseAccessRequests(namespace string) DatabaseAccessRequestInterface {
+	return newDatabaseAccessRequests(c, namespace)
 }
 
-func (c *AuthorizationV1alpha1Client) MongoDBRoleBindings(namespace string) MongoDBRoleBindingInterface {
-	return newMongoDBRoleBindings(c, namespace)
+func (c *AuthorizationV1alpha1Client) MongoDBRoles(namespace string) MongoDBRoleInterface {
+	return newMongoDBRoles(c, namespace)
 }
 
 func (c *AuthorizationV1alpha1Client) MySQLRoles(namespace string) MySQLRoleInterface {
 	return newMySQLRoles(c, namespace)
 }
 
-func (c *AuthorizationV1alpha1Client) MySQLRoleBindings(namespace string) MySQLRoleBindingInterface {
-	return newMySQLRoleBindings(c, namespace)
-}
-
 func (c *AuthorizationV1alpha1Client) PostgresRoles(namespace string) PostgresRoleInterface {
 	return newPostgresRoles(c, namespace)
-}
-
-func (c *AuthorizationV1alpha1Client) PostgresRoleBindings(namespace string) PostgresRoleBindingInterface {
-	return newPostgresRoleBindings(c, namespace)
 }
 
 // NewForConfig creates a new AuthorizationV1alpha1Client for the given config.

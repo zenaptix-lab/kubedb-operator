@@ -56,7 +56,7 @@ func (c *Controller) ensureStatefulSet(
 		return kutil.VerbUnchanged, rerr
 	}
 
-	searchGuard := string(elasticsearch.Spec.Version[0])
+	searchGuard := string(elasticsearchVersion.Spec.Version[0])
 
 	statefulSet, vt, err := app_util.CreateOrPatchStatefulSet(c.Client, statefulSetMeta, func(in *apps.StatefulSet) *apps.StatefulSet {
 		in.Labels = core_util.UpsertMap(labels, elasticsearch.OffshootLabels())
@@ -129,6 +129,12 @@ func (c *Controller) ensureStatefulSet(
 
 		in = upsertCertificate(in, elasticsearch.Spec.CertificateSecret.SecretName, isClient, elasticsearch.Spec.EnableSSL)
 		in = upsertDataVolume(in, elasticsearch.Spec.StorageType, pvcSpec)
+		in = upsertTemporaryVolume(in)
+
+		if c.EnableRBAC {
+			in.Spec.Template.Spec.ServiceAccountName = elasticsearch.OffshootName()
+		}
+
 		in.Spec.UpdateStrategy = elasticsearch.Spec.UpdateStrategy
 
 		return in
@@ -141,17 +147,8 @@ func (c *Controller) ensureStatefulSet(
 	if vt == kutil.VerbCreated || vt == kutil.VerbPatched {
 		// Check StatefulSet Pod status
 		if err := c.CheckStatefulSetPodStatus(statefulSet); err != nil {
-			c.recorder.Eventf(
-				elasticsearch,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToStart,
-				`Failed to be running after StatefulSet %v. Reason: %v`,
-				vt,
-				err,
-			)
 			return kutil.VerbUnchanged, err
 		}
-
 		c.recorder.Eventf(
 			elasticsearch,
 			core.EventTypeNormal,
@@ -159,7 +156,6 @@ func (c *Controller) ensureStatefulSet(
 			"Successfully %v StatefulSet",
 			vt,
 		)
-
 	}
 	return vt, nil
 }
@@ -367,14 +363,13 @@ func (c *Controller) checkStatefulSet(elasticsearch *api.Elasticsearch, name str
 	if err != nil {
 		if kerr.IsNotFound(err) {
 			return nil
-		} else {
-			return err
 		}
+		return err
 	}
 
 	if statefulSet.Labels[api.LabelDatabaseKind] != api.ResourceKindElasticsearch ||
 		statefulSet.Labels[api.LabelDatabaseName] != elasticsearchName {
-		return fmt.Errorf(`intended statefulSet "%v" already exists`, name)
+		return fmt.Errorf(`intended statefulSet "%v/%v" already exists`, elasticsearch.Namespace, name)
 	}
 
 	return nil
@@ -567,27 +562,27 @@ func upsertCertificate(statefulSet *apps.StatefulSet, secretName string, isClien
 			SecretName: secretName,
 			Items: []core.KeyToPath{
 				{
-					Key:  "root.jks",
-					Path: "root.jks",
+					Key:  rootKeyStore,
+					Path: rootKeyStore,
 				},
 				{
-					Key:  "node.jks",
-					Path: "node.jks",
+					Key:  nodeKeyStore,
+					Path: nodeKeyStore,
 				},
 			},
 		}
 
 		if isEnalbeSSL {
 			svs.Items = append(svs.Items, core.KeyToPath{
-				Key:  "client.jks",
-				Path: "client.jks",
+				Key:  clientKeyStore,
+				Path: clientKeyStore,
 			})
 		}
 
 		if isClientNode {
 			svs.Items = append(svs.Items, core.KeyToPath{
-				Key:  "sgadmin.jks",
-				Path: "sgadmin.jks",
+				Key:  sgAdminKeyStore,
+				Path: sgAdminKeyStore,
 			})
 		}
 		return svs
@@ -686,6 +681,28 @@ func upsertDataVolume(statefulSet *apps.StatefulSet, st api.StorageType, pvcSpec
 				statefulSet.Spec.VolumeClaimTemplates = core_util.UpsertVolumeClaim(statefulSet.Spec.VolumeClaimTemplates, claim)
 			}
 
+			return statefulSet
+		}
+	}
+	return statefulSet
+}
+
+func upsertTemporaryVolume(statefulSet *apps.StatefulSet) *apps.StatefulSet {
+	for i, container := range statefulSet.Spec.Template.Spec.Containers {
+		if container.Name == api.ResourceSingularElasticsearch {
+			volumeMount := core.VolumeMount{
+				Name:      "temp",
+				MountPath: "/tmp",
+			}
+			statefulSet.Spec.Template.Spec.Containers[i].VolumeMounts = core_util.UpsertVolumeMount(container.VolumeMounts, volumeMount)
+
+			volume := core.Volume{
+				Name: "temp",
+				VolumeSource: core.VolumeSource{
+					EmptyDir: &core.EmptyDirVolumeSource{},
+				},
+			}
+			statefulSet.Spec.Template.Spec.Volumes = core_util.UpsertVolume(statefulSet.Spec.Template.Spec.Volumes, volume)
 			return statefulSet
 		}
 	}

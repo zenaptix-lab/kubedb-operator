@@ -54,6 +54,11 @@ func (e *Elasticsearch) MasterServiceName() string {
 	return fmt.Sprintf("%v-master", e.ServiceName())
 }
 
+// Snapshot service account name.
+func (e Elasticsearch) SnapshotSAName() string {
+	return fmt.Sprintf("%v-snapshot", e.OffshootName())
+}
+
 func (e *Elasticsearch) GetConnectionScheme() string {
 	scheme := "http"
 	if e.Spec.EnableSSL {
@@ -71,7 +76,7 @@ type elasticsearchApp struct {
 }
 
 func (r elasticsearchApp) Name() string {
-	return fmt.Sprintf("kubedb:%s:%s:%s", ResourceSingularElasticsearch, r.Elasticsearch.Namespace, r.Elasticsearch.Name)
+	return r.Elasticsearch.Name
 }
 
 func (r elasticsearchApp) Type() appcat.AppType {

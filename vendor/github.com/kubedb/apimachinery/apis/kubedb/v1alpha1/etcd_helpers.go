@@ -54,12 +54,17 @@ func (e Etcd) PeerServiceName() string {
 	return e.OffshootName()
 }
 
+// Snapshot service account name.
+func (e Etcd) SnapshotSAName() string {
+	return fmt.Sprintf("%v-snapshot", e.OffshootName())
+}
+
 type etcdApp struct {
 	*Etcd
 }
 
 func (r etcdApp) Name() string {
-	return fmt.Sprintf("kubedb:%s:%s:%s", ResourceSingularEtcd, r.Etcd.Namespace, r.Etcd.Name)
+	return r.Etcd.Name
 }
 
 func (r etcdApp) Type() appcat.AppType {

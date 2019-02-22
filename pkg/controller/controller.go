@@ -21,6 +21,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	appcat "kmodules.xyz/custom-resources/apis/appcatalog/v1alpha1"
+	appcat_cs "kmodules.xyz/custom-resources/client/clientset/versioned/typed/appcatalog/v1alpha1"
 )
 
 type Controller struct {
@@ -44,7 +46,8 @@ func New(
 	client kubernetes.Interface,
 	apiExtKubeClient crd_cs.ApiextensionsV1beta1Interface,
 	dbClient cs.Interface,
-	dc dynamic.Interface,
+	dynamicClient dynamic.Interface,
+	appCatalogClient appcat_cs.AppcatalogV1alpha1Interface,
 	promClient pcm.MonitoringV1Interface,
 	cronController snapc.CronControllerInterface,
 	opt amc.Config,
@@ -55,7 +58,8 @@ func New(
 			Client:           client,
 			ExtClient:        dbClient,
 			ApiExtKubeClient: apiExtKubeClient,
-			DynamicClient:    dc,
+			DynamicClient:    dynamicClient,
+			AppCatalogClient: appCatalogClient,
 		},
 		Config:         opt,
 		promClient:     promClient,
@@ -84,6 +88,8 @@ func (c *Controller) EnsureCustomResourceDefinitions() error {
 		catalogapi.MongoDBVersion{}.CustomResourceDefinition(),
 		catalogapi.RedisVersion{}.CustomResourceDefinition(),
 		catalogapi.MemcachedVersion{}.CustomResourceDefinition(),
+
+		appcat.AppBinding{}.CustomResourceDefinition(),
 	}
 	return apiext_util.RegisterCRDs(c.ApiExtKubeClient, crds)
 }

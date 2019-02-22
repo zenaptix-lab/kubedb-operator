@@ -18,6 +18,13 @@ import (
 	ofst "kmodules.xyz/offshoot-api/api/v1"
 )
 
+var defaultDBPort = core.ServicePort{
+	Name:       "db",
+	Protocol:   core.ProtocolTCP,
+	Port:       3306,
+	TargetPort: intstr.FromString("db"),
+}
+
 func (c *Controller) ensureService(mysql *api.MySQL) (kutil.VerbType, error) {
 	// Check if service name exists
 	if err := c.checkService(mysql, mysql.ServiceName()); err != nil {
@@ -27,13 +34,6 @@ func (c *Controller) ensureService(mysql *api.MySQL) (kutil.VerbType, error) {
 	// create database Service
 	vt, err := c.createService(mysql)
 	if err != nil {
-		c.recorder.Eventf(
-			mysql,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to create Service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt != kutil.VerbUnchanged {
 		c.recorder.Eventf(
@@ -58,7 +58,7 @@ func (c *Controller) checkService(mysql *api.MySQL, serviceName string) error {
 
 	if service.Labels[api.LabelDatabaseKind] != api.ResourceKindMySQL ||
 		service.Labels[api.LabelDatabaseName] != mysql.Name {
-		return fmt.Errorf(`intended service "%v" already exists`, serviceName)
+		return fmt.Errorf(`intended service "%v/%v" already exists`, mysql.Namespace, serviceName)
 	}
 
 	return nil
@@ -82,14 +82,7 @@ func (c *Controller) createService(mysql *api.MySQL) (kutil.VerbType, error) {
 
 		in.Spec.Selector = mysql.OffshootSelectors()
 		in.Spec.Ports = ofst.MergeServicePorts(
-			core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{
-				{
-					Name:       "db",
-					Protocol:   core.ProtocolTCP,
-					Port:       3306,
-					TargetPort: intstr.FromString("db"),
-				},
-			}),
+			core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{defaultDBPort}),
 			mysql.Spec.ServiceTemplate.Spec.Ports,
 		)
 
@@ -148,13 +141,6 @@ func (c *Controller) ensureStatsService(mysql *api.MySQL) (kutil.VerbType, error
 		return in
 	})
 	if err != nil {
-		c.recorder.Eventf(
-			mysql,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to reconcile stats service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt != kutil.VerbUnchanged {
 		c.recorder.Eventf(

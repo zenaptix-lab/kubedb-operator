@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/appscode/go/log"
 	"github.com/appscode/go/types"
@@ -33,13 +34,6 @@ func (c *Controller) ensureStatefulSet(mysql *api.MySQL) (kutil.VerbType, error)
 	// Check StatefulSet Pod status
 	if vt != kutil.VerbUnchanged {
 		if err := c.checkStatefulSetPodStatus(statefulSet); err != nil {
-			c.recorder.Eventf(
-				mysql,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToStart,
-				`Failed to CreateOrPatch StatefulSet. Reason: %v`,
-				err,
-			)
 			return kutil.VerbUnchanged, err
 		}
 		c.recorder.Eventf(
@@ -65,7 +59,7 @@ func (c *Controller) checkStatefulSet(mysql *api.MySQL) error {
 
 	if statefulSet.Labels[api.LabelDatabaseKind] != api.ResourceKindMySQL ||
 		statefulSet.Labels[api.LabelDatabaseName] != mysql.Name {
-		return fmt.Errorf(`intended statefulSet "%v" already exists`, mysql.OffshootName())
+		return fmt.Errorf(`intended statefulSet "%v/%v" already exists`, mysql.Namespace, mysql.OffshootName())
 	}
 
 	return nil
@@ -152,8 +146,8 @@ func (c *Controller) createStatefulSet(mysql *api.MySQL) (*apps.StatefulSet, kut
 					// DATA_SOURCE_NAME=user:password@tcp(localhost:5555)/dbname
 					// ref: https://github.com/prometheus/mysqld_exporter#setting-the-mysql-servers-data-source-name
 					fmt.Sprintf(`export DATA_SOURCE_NAME="${MYSQL_ROOT_USERNAME:-}:${MYSQL_ROOT_PASSWORD:-}@(127.0.0.1:3306)/"
-						/bin/mysqld_exporter --web.listen-address=:%v --web.telemetry-path=%v`,
-						mysql.Spec.Monitor.Prometheus.Port, mysql.StatsService().Path()),
+						/bin/mysqld_exporter --web.listen-address=:%v --web.telemetry-path=%v %v`,
+						mysql.Spec.Monitor.Prometheus.Port, mysql.StatsService().Path(), strings.Join(mysql.Spec.Monitor.Args, " ")),
 				},
 				Image: mysqlVersion.Spec.Exporter.Image,
 				Ports: []core.ContainerPort{
@@ -163,7 +157,9 @@ func (c *Controller) createStatefulSet(mysql *api.MySQL) (*apps.StatefulSet, kut
 						ContainerPort: mysql.Spec.Monitor.Prometheus.Port,
 					},
 				},
-				Resources: mysql.Spec.Monitor.Resources,
+				Env:             mysql.Spec.Monitor.Env,
+				Resources:       mysql.Spec.Monitor.Resources,
+				SecurityContext: mysql.Spec.Monitor.SecurityContext,
 			})
 		}
 		// Set Admin Secret as MYSQL_ROOT_PASSWORD env variable
@@ -185,6 +181,10 @@ func (c *Controller) createStatefulSet(mysql *api.MySQL) (*apps.StatefulSet, kut
 		in.Spec.Template.Spec.PriorityClassName = mysql.Spec.PodTemplate.Spec.PriorityClassName
 		in.Spec.Template.Spec.Priority = mysql.Spec.PodTemplate.Spec.Priority
 		in.Spec.Template.Spec.SecurityContext = mysql.Spec.PodTemplate.Spec.SecurityContext
+
+		if c.EnableRBAC {
+			in.Spec.Template.Spec.ServiceAccountName = mysql.OffshootName()
+		}
 
 		in.Spec.UpdateStrategy = mysql.Spec.UpdateStrategy
 		in = upsertUserEnv(in, mysql)

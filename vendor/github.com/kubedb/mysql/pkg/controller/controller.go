@@ -9,6 +9,7 @@ import (
 	"github.com/appscode/kutil/tools/queue"
 	pcm "github.com/coreos/prometheus-operator/pkg/client/monitoring/v1"
 	"github.com/kubedb/apimachinery/apis"
+	authorization "github.com/kubedb/apimachinery/apis/authorization/v1alpha1"
 	catalog "github.com/kubedb/apimachinery/apis/catalog/v1alpha1"
 	api "github.com/kubedb/apimachinery/apis/kubedb/v1alpha1"
 	cs "github.com/kubedb/apimachinery/client/clientset/versioned"
@@ -28,6 +29,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	appcat "kmodules.xyz/custom-resources/apis/appcatalog/v1alpha1"
+	appcat_cs "kmodules.xyz/custom-resources/client/clientset/versioned/typed/appcatalog/v1alpha1"
 )
 
 type Controller struct {
@@ -42,6 +45,7 @@ type Controller struct {
 	recorder record.EventRecorder
 	// labelselector for event-handler of Snapshot, Dormant and Job
 	selector labels.Selector
+
 	// MySQL
 	myQueue    *queue.Worker
 	myInformer cache.SharedIndexInformer
@@ -56,10 +60,12 @@ func New(
 	client kubernetes.Interface,
 	apiExtKubeClient crd_cs.ApiextensionsV1beta1Interface,
 	extClient cs.Interface,
-	dc dynamic.Interface,
+	dynamicClient dynamic.Interface,
+	appCatalogClient appcat_cs.AppcatalogV1alpha1Interface,
 	promClient pcm.MonitoringV1Interface,
 	cronController snapc.CronControllerInterface,
 	opt amc.Config,
+	recorder record.EventRecorder,
 ) *Controller {
 	return &Controller{
 		Controller: &amc.Controller{
@@ -67,12 +73,13 @@ func New(
 			Client:           client,
 			ExtClient:        extClient,
 			ApiExtKubeClient: apiExtKubeClient,
-			DynamicClient:    dc,
+			DynamicClient:    dynamicClient,
+			AppCatalogClient: appCatalogClient,
 		},
 		Config:         opt,
 		promClient:     promClient,
 		cronController: cronController,
-		recorder:       eventer.NewEventRecorder(client, "MySQL operator"),
+		recorder:       recorder,
 		selector: labels.SelectorFromSet(map[string]string{
 			api.LabelDatabaseKind: api.ResourceKindMySQL,
 		}),
@@ -87,6 +94,9 @@ func (c *Controller) EnsureCustomResourceDefinitions() error {
 		catalog.MySQLVersion{}.CustomResourceDefinition(),
 		api.DormantDatabase{}.CustomResourceDefinition(),
 		api.Snapshot{}.CustomResourceDefinition(),
+		authorization.MySQLRole{}.CustomResourceDefinition(),
+		authorization.DatabaseAccessRequest{}.CustomResourceDefinition(),
+		appcat.AppBinding{}.CustomResourceDefinition(),
 	}
 	return apiext_util.RegisterCRDs(c.ApiExtKubeClient, crds)
 }
@@ -94,8 +104,8 @@ func (c *Controller) EnsureCustomResourceDefinitions() error {
 // Init initializes mysql, DormantDB amd Snapshot watcher
 func (c *Controller) Init() error {
 	c.initWatcher()
-	c.DrmnQueue = drmnc.NewController(c.Controller, c, c.Config, nil).AddEventHandlerFunc(c.selector)
-	c.SnapQueue, c.JobQueue = snapc.NewController(c.Controller, c, c.Config, nil).AddEventHandlerFunc(c.selector)
+	c.DrmnQueue = drmnc.NewController(c.Controller, c, c.Config, nil, c.recorder).AddEventHandlerFunc(c.selector)
+	c.SnapQueue, c.JobQueue = snapc.NewController(c.Controller, c, c.Config, nil, c.recorder).AddEventHandlerFunc(c.selector)
 
 	return nil
 }

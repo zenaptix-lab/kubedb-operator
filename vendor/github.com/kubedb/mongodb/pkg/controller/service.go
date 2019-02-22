@@ -22,6 +22,15 @@ const (
 	MongoDBPort = 27017
 )
 
+var (
+	defaultDBPort = core.ServicePort{
+		Name:       "db",
+		Protocol:   core.ProtocolTCP,
+		Port:       MongoDBPort,
+		TargetPort: intstr.FromString("db"),
+	}
+)
+
 func (c *Controller) ensureService(mongodb *api.MongoDB) (kutil.VerbType, error) {
 	// Check if service name exists
 	if err := c.checkService(mongodb, mongodb.ServiceName()); err != nil {
@@ -31,13 +40,6 @@ func (c *Controller) ensureService(mongodb *api.MongoDB) (kutil.VerbType, error)
 	// create database Service
 	vt, err := c.createService(mongodb)
 	if err != nil {
-		c.recorder.Eventf(
-			mongodb,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to createOrPatch Service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt != kutil.VerbUnchanged {
 		c.recorder.Eventf(
@@ -62,7 +64,7 @@ func (c *Controller) checkService(mongodb *api.MongoDB, serviceName string) erro
 
 	if service.Labels[api.LabelDatabaseKind] != api.ResourceKindMongoDB ||
 		service.Labels[api.LabelDatabaseName] != mongodb.Name {
-		return fmt.Errorf(`intended service "%v" already exists`, serviceName)
+		return fmt.Errorf(`intended service "%v/%v" already exists`, mongodb.Namespace, serviceName)
 	}
 
 	return nil
@@ -86,14 +88,7 @@ func (c *Controller) createService(mongodb *api.MongoDB) (kutil.VerbType, error)
 
 		in.Spec.Selector = mongodb.OffshootSelectors()
 		in.Spec.Ports = ofst.MergeServicePorts(
-			core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{
-				{
-					Name:       "db",
-					Protocol:   core.ProtocolTCP,
-					Port:       MongoDBPort,
-					TargetPort: intstr.FromString("db"),
-				},
-			}),
+			core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{defaultDBPort}),
 			mongodb.Spec.ServiceTemplate.Spec.Ports,
 		)
 
@@ -152,13 +147,6 @@ func (c *Controller) ensureStatsService(mongodb *api.MongoDB) (kutil.VerbType, e
 		return in
 	})
 	if err != nil {
-		c.recorder.Eventf(
-			ref,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to reconcile stats service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt != kutil.VerbUnchanged {
 		c.recorder.Eventf(

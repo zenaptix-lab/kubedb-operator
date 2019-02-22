@@ -4,9 +4,9 @@ import (
 	"fmt"
 
 	"github.com/appscode/go/crypto/rand"
+	core_util "github.com/appscode/kutil/core/v1"
 	api "github.com/kubedb/apimachinery/apis/kubedb/v1alpha1"
 	"github.com/kubedb/apimachinery/client/clientset/versioned/typed/kubedb/v1alpha1/util"
-	"github.com/kubedb/apimachinery/pkg/eventer"
 	core "k8s.io/api/core/v1"
 	kerr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,23 +15,14 @@ import (
 const (
 	mysqlUser = "root"
 
-	KeyMySQLUser     = "user"
+	KeyMySQLUser     = "username"
 	KeyMySQLPassword = "password"
-
-	ExporterSecretPath = "/var/run/secrets/kubedb.com/"
 )
 
 func (c *Controller) ensureDatabaseSecret(mysql *api.MySQL) error {
 	if mysql.Spec.DatabaseSecret == nil {
 		secretVolumeSource, err := c.createDatabaseSecret(mysql)
 		if err != nil {
-			c.recorder.Eventf(
-				mysql,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToCreate,
-				`Failed to create Database Secret. Reason: %v`,
-				err.Error(),
-			)
 			return err
 		}
 
@@ -40,17 +31,12 @@ func (c *Controller) ensureDatabaseSecret(mysql *api.MySQL) error {
 			return in
 		})
 		if err != nil {
-			c.recorder.Eventf(
-				mysql,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToUpdate,
-				err.Error(),
-			)
 			return err
 		}
 		mysql.Spec.DatabaseSecret = ms.Spec.DatabaseSecret
+		return nil
 	}
-	return nil
+	return c.upgradeDatabaseSecret(mysql)
 }
 
 func (c *Controller) createDatabaseSecret(mysql *api.MySQL) (*core.SecretVolumeSource, error) {
@@ -87,6 +73,25 @@ func (c *Controller) createDatabaseSecret(mysql *api.MySQL) (*core.SecretVolumeS
 	}, nil
 }
 
+// This is done to fix 0.8.0 -> 0.9.0 upgrade due to
+// https://github.com/kubedb/mysql/pull/115/files#diff-10ddaf307bbebafda149db10a28b9c24R17 commit
+func (c *Controller) upgradeDatabaseSecret(mysql *api.MySQL) error {
+	meta := metav1.ObjectMeta{
+		Name:      mysql.Spec.DatabaseSecret.SecretName,
+		Namespace: mysql.Namespace,
+	}
+
+	_, _, err := core_util.CreateOrPatchSecret(c.Client, meta, func(in *core.Secret) *core.Secret {
+		if _, ok := in.Data[KeyMySQLUser]; !ok {
+			if val, ok2 := in.Data["user"]; ok2 {
+				in.StringData = map[string]string{KeyMySQLUser: string(val)}
+			}
+		}
+		return in
+	})
+	return err
+}
+
 func (c *Controller) checkSecret(secretName string, mysql *api.MySQL) (*core.Secret, error) {
 	secret, err := c.Client.CoreV1().Secrets(mysql.Namespace).Get(secretName, metav1.GetOptions{})
 	if err != nil {
@@ -94,11 +99,11 @@ func (c *Controller) checkSecret(secretName string, mysql *api.MySQL) (*core.Sec
 			return nil, nil
 		}
 		return nil, err
-
 	}
+
 	if secret.Labels[api.LabelDatabaseKind] != api.ResourceKindMySQL ||
 		secret.Labels[api.LabelDatabaseName] != mysql.Name {
-		return nil, fmt.Errorf(`intended secret "%v" already exists`, secretName)
+		return nil, fmt.Errorf(`intended secret "%v/%v" already exists`, mysql.Namespace, secretName)
 	}
 	return secret, nil
 }

@@ -85,7 +85,7 @@ func (a *RedisValidator) Admit(req *admission.AdmissionRequest) *admission.Admis
 			if err != nil && !kerr.IsNotFound(err) {
 				return hookapi.StatusInternalServerError(err)
 			} else if err == nil && obj.Spec.TerminationPolicy == api.TerminationPolicyDoNotTerminate {
-				return hookapi.StatusBadRequest(fmt.Errorf(`redis "%s" can't be paused. To delete, change spec.terminationPolicy`, req.Name))
+				return hookapi.StatusBadRequest(fmt.Errorf(`redis "%v/%v" can't be paused. To delete, change spec.terminationPolicy`, req.Namespace, req.Name))
 			}
 		}
 	default:
@@ -101,6 +101,7 @@ func (a *RedisValidator) Admit(req *admission.AdmissionRequest) *admission.Admis
 			}
 			redis := obj.(*api.Redis).DeepCopy()
 			oldRedis := oldObject.(*api.Redis).DeepCopy()
+			oldRedis.SetDefaults()
 			if err := validateUpdate(redis, oldRedis, req.Kind.Kind); err != nil {
 				return hookapi.StatusBadRequest(fmt.Errorf("%v", err))
 			}
@@ -124,8 +125,21 @@ func ValidateRedis(client kubernetes.Interface, extClient cs.Interface, redis *a
 		return err
 	}
 
-	if redis.Spec.Replicas == nil || *redis.Spec.Replicas != 1 {
-		return fmt.Errorf(`spec.replicas "%v" invalid. Value must be one`, redis.Spec.Replicas)
+	if redis.Spec.Mode != api.RedisModeStandalone && redis.Spec.Mode != api.RedisModeCluster {
+		return fmt.Errorf(`spec.mode "%v" invalid. Value must be one of "%v" or "%v"`,
+			redis.Spec.Mode, api.RedisModeStandalone, api.RedisModeCluster)
+	}
+
+	if redis.Spec.Mode == api.RedisModeStandalone && *redis.Spec.Replicas != 1 {
+		return fmt.Errorf(`spec.replicas "%v" invalid for standalone mode. Value must be one`, redis.Spec.Replicas)
+	}
+
+	if redis.Spec.Mode == api.RedisModeCluster && *redis.Spec.Cluster.Master < 3 {
+		return fmt.Errorf(`spec.cluster.master "%v" invalid. Value must be >= 3`, redis.Spec.Cluster.Master)
+	}
+
+	if redis.Spec.Mode == api.RedisModeCluster && *redis.Spec.Cluster.Replicas == 0 {
+		return fmt.Errorf(`spec.cluster.replicas "%v" invalid. Value must be > 0`, redis.Spec.Cluster.Master)
 	}
 
 	if redis.Spec.StorageType == "" {
@@ -192,7 +206,7 @@ func matchWithDormantDatabase(extClient cs.Interface, redis *api.Redis) error {
 
 	// Check DatabaseKind
 	if value, _ := meta_util.GetStringValue(dormantDb.Labels, api.LabelDatabaseKind); value != api.ResourceKindRedis {
-		return errors.New(fmt.Sprintf(`invalid Redis: "%v". Exists DormantDatabase "%v" of different Kind`, redis.Name, dormantDb.Name))
+		return errors.New(fmt.Sprintf(`invalid Redis: "%v/%v". Exists DormantDatabase "%v/%v" of different Kind`, redis.Namespace, redis.Name, dormantDb.Namespace, dormantDb.Name))
 	}
 
 	// Check Origin Spec
@@ -250,7 +264,6 @@ var preconditionSpecFields = []string{
 	"spec.storageType",
 	"spec.storage",
 	"spec.podTemplate.spec.nodeSelector",
-	"spec.podTemplate.spec.env",
 }
 
 func preconditionFailedError(kind string) error {

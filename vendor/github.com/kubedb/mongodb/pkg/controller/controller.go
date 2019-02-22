@@ -9,8 +9,9 @@ import (
 	"github.com/appscode/kutil/tools/queue"
 	pcm "github.com/coreos/prometheus-operator/pkg/client/monitoring/v1"
 	"github.com/kubedb/apimachinery/apis"
-	catlogapi "github.com/kubedb/apimachinery/apis/catalog/v1alpha1"
-	dbapi "github.com/kubedb/apimachinery/apis/kubedb/v1alpha1"
+	authorization "github.com/kubedb/apimachinery/apis/authorization/v1alpha1"
+	catlog "github.com/kubedb/apimachinery/apis/catalog/v1alpha1"
+	api "github.com/kubedb/apimachinery/apis/kubedb/v1alpha1"
 	cs "github.com/kubedb/apimachinery/client/clientset/versioned"
 	"github.com/kubedb/apimachinery/client/clientset/versioned/typed/kubedb/v1alpha1/util"
 	api_listers "github.com/kubedb/apimachinery/client/listers/kubedb/v1alpha1"
@@ -28,6 +29,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	appcat "kmodules.xyz/custom-resources/apis/appcatalog/v1alpha1"
+	appcat_cs "kmodules.xyz/custom-resources/client/clientset/versioned/typed/appcatalog/v1alpha1"
 )
 
 type Controller struct {
@@ -58,9 +61,11 @@ func New(
 	apiExtKubeClient crd_cs.ApiextensionsV1beta1Interface,
 	extClient cs.Interface,
 	dynamicClient dynamic.Interface,
+	appCatalogClient appcat_cs.AppcatalogV1alpha1Interface,
 	promClient pcm.MonitoringV1Interface,
 	cronController snapc.CronControllerInterface,
 	opt amc.Config,
+	recorder record.EventRecorder,
 ) *Controller {
 	return &Controller{
 		Controller: &amc.Controller{
@@ -69,13 +74,14 @@ func New(
 			ExtClient:        extClient,
 			ApiExtKubeClient: apiExtKubeClient,
 			DynamicClient:    dynamicClient,
+			AppCatalogClient: appCatalogClient,
 		},
 		Config:         opt,
 		promClient:     promClient,
 		cronController: cronController,
-		recorder:       eventer.NewEventRecorder(client, "MongoDB operator"),
+		recorder:       recorder,
 		selector: labels.SelectorFromSet(map[string]string{
-			dbapi.LabelDatabaseKind: dbapi.ResourceKindMongoDB,
+			api.LabelDatabaseKind: api.ResourceKindMongoDB,
 		}),
 	}
 }
@@ -84,10 +90,13 @@ func New(
 func (c *Controller) EnsureCustomResourceDefinitions() error {
 	log.Infoln("Ensuring CustomResourceDefinition...")
 	crds := []*crd_api.CustomResourceDefinition{
-		dbapi.MongoDB{}.CustomResourceDefinition(),
-		catlogapi.MongoDBVersion{}.CustomResourceDefinition(),
-		dbapi.DormantDatabase{}.CustomResourceDefinition(),
-		dbapi.Snapshot{}.CustomResourceDefinition(),
+		api.MongoDB{}.CustomResourceDefinition(),
+		catlog.MongoDBVersion{}.CustomResourceDefinition(),
+		api.DormantDatabase{}.CustomResourceDefinition(),
+		api.Snapshot{}.CustomResourceDefinition(),
+		authorization.MongoDBRole{}.CustomResourceDefinition(),
+		authorization.DatabaseAccessRequest{}.CustomResourceDefinition(),
+		appcat.AppBinding{}.CustomResourceDefinition(),
 	}
 	return apiext_util.RegisterCRDs(c.ApiExtKubeClient, crds)
 }
@@ -95,8 +104,8 @@ func (c *Controller) EnsureCustomResourceDefinitions() error {
 // InitInformer initializes MongoDB, DormantDB amd Snapshot watcher
 func (c *Controller) Init() error {
 	c.initWatcher()
-	c.DrmnQueue = dormantdatabase.NewController(c.Controller, c, c.Config, nil).AddEventHandlerFunc(c.selector)
-	c.SnapQueue, c.JobQueue = snapc.NewController(c.Controller, c, c.Config, nil).AddEventHandlerFunc(c.selector)
+	c.DrmnQueue = dormantdatabase.NewController(c.Controller, c, c.Config, nil, c.recorder).AddEventHandlerFunc(c.selector)
+	c.SnapQueue, c.JobQueue = snapc.NewController(c.Controller, c, c.Config, nil, c.recorder).AddEventHandlerFunc(c.selector)
 
 	return nil
 }
@@ -158,7 +167,7 @@ func (c *Controller) StartAndRunControllers(stopCh <-chan struct{}) {
 	log.Infoln("Stopping KubeDB controller")
 }
 
-func (c *Controller) pushFailureEvent(mongodb *dbapi.MongoDB, reason string) {
+func (c *Controller) pushFailureEvent(mongodb *api.MongoDB, reason string) {
 	c.recorder.Eventf(
 		mongodb,
 		core.EventTypeWarning,
@@ -168,8 +177,8 @@ func (c *Controller) pushFailureEvent(mongodb *dbapi.MongoDB, reason string) {
 		reason,
 	)
 
-	mg, err := util.UpdateMongoDBStatus(c.ExtClient.KubedbV1alpha1(), mongodb, func(in *dbapi.MongoDBStatus) *dbapi.MongoDBStatus {
-		in.Phase = dbapi.DatabasePhaseFailed
+	mg, err := util.UpdateMongoDBStatus(c.ExtClient.KubedbV1alpha1(), mongodb, func(in *api.MongoDBStatus) *api.MongoDBStatus {
+		in.Phase = api.DatabasePhaseFailed
 		in.Reason = reason
 		in.ObservedGeneration = types.NewIntHash(mongodb.Generation, meta_util.GenerationHash(mongodb))
 		return in

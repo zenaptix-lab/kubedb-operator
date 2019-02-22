@@ -18,6 +18,13 @@ import (
 	ofst "kmodules.xyz/offshoot-api/api/v1"
 )
 
+var defaultDBPort = core.ServicePort{
+	Name:       "db",
+	Protocol:   core.ProtocolTCP,
+	Port:       11211,
+	TargetPort: intstr.FromString("db"),
+}
+
 func (c *Controller) ensureService(memcached *api.Memcached) (kutil.VerbType, error) {
 	// Check if service name exists
 	if err := c.checkService(memcached, memcached.ServiceName()); err != nil {
@@ -26,13 +33,6 @@ func (c *Controller) ensureService(memcached *api.Memcached) (kutil.VerbType, er
 	// create database Service
 	vt, err := c.createService(memcached)
 	if err != nil {
-		c.recorder.Eventf(
-			memcached,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to create Service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt != kutil.VerbUnchanged {
 		c.recorder.Eventf(
@@ -57,7 +57,7 @@ func (c *Controller) checkService(memcached *api.Memcached, serviceName string) 
 
 	if service.Labels[api.LabelDatabaseKind] != api.ResourceKindMemcached ||
 		service.Labels[api.LabelDatabaseName] != memcached.Name {
-		return fmt.Errorf(`intended service "%v" already exists`, serviceName)
+		return fmt.Errorf(`intended service "%v/%v" already exists`, memcached.Namespace, serviceName)
 	}
 
 	return nil
@@ -81,14 +81,7 @@ func (c *Controller) createService(memcached *api.Memcached) (kutil.VerbType, er
 
 		in.Spec.Selector = memcached.OffshootSelectors()
 		in.Spec.Ports = ofst.MergeServicePorts(
-			core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{
-				{
-					Name:       "db",
-					Protocol:   core.ProtocolTCP,
-					Port:       11211,
-					TargetPort: intstr.FromString("db"),
-				},
-			}),
+			core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{defaultDBPort}),
 			memcached.Spec.ServiceTemplate.Spec.Ports,
 		)
 
@@ -147,13 +140,6 @@ func (c *Controller) ensureStatsService(memcached *api.Memcached) (kutil.VerbTyp
 		return in
 	})
 	if err != nil {
-		c.recorder.Eventf(
-			memcached,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to reconcile stats service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt != kutil.VerbUnchanged {
 		c.recorder.Eventf(

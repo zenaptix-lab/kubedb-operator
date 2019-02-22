@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 
 	"github.com/appscode/go/crypto/rand"
+	core_util "github.com/appscode/kutil/core/v1"
 	api "github.com/kubedb/apimachinery/apis/kubedb/v1alpha1"
 	"github.com/kubedb/apimachinery/client/clientset/versioned/typed/kubedb/v1alpha1/util"
-	"github.com/kubedb/apimachinery/pkg/eventer"
 	"golang.org/x/crypto/bcrypt"
 	core "k8s.io/api/core/v1"
 	kerr "k8s.io/apimachinery/pkg/api/errors"
@@ -38,13 +39,6 @@ func (c *Controller) ensureCertSecret(elasticsearch *api.Elasticsearch) error {
 			return in
 		})
 		if err != nil {
-			c.recorder.Eventf(
-				elasticsearch,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToUpdate,
-				err.Error(),
-			)
-
 			return err
 		}
 		elasticsearch.Spec.CertificateSecret = es.Spec.CertificateSecret
@@ -64,17 +58,12 @@ func (c *Controller) ensureDatabaseSecret(elasticsearch *api.Elasticsearch) erro
 			return in
 		})
 		if err != nil {
-			c.recorder.Eventf(
-				elasticsearch,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToUpdate,
-				err.Error(),
-			)
 			return err
 		}
 		elasticsearch.Spec.DatabaseSecret = es.Spec.DatabaseSecret
+		return nil
 	}
-	return nil
+	return c.upgradeDatabaseSecret(elasticsearch)
 }
 
 func (c *Controller) findCertSecret(elasticsearch *api.Elasticsearch) (*core.Secret, error) {
@@ -91,7 +80,7 @@ func (c *Controller) findCertSecret(elasticsearch *api.Elasticsearch) (*core.Sec
 
 	if secret.Labels[api.LabelDatabaseKind] != api.ResourceKindElasticsearch ||
 		secret.Labels[api.LabelDatabaseName] != elasticsearch.Name {
-		return nil, fmt.Errorf(`intended secret "%v" already exists`, name)
+		return nil, fmt.Errorf(`intended secret "%v/%v" already exists`, elasticsearch.Namespace, name)
 	}
 
 	return secret, nil
@@ -123,23 +112,23 @@ func (c *Controller) createCertSecret(elasticsearch *api.Elasticsearch) (*core.S
 	if err != nil {
 		return nil, err
 	}
-	root, err := ioutil.ReadFile(fmt.Sprintf("%s/root.jks", certPath))
+	root, err := ioutil.ReadFile(filepath.Join(certPath, rootKeyStore))
 	if err != nil {
 		return nil, err
 	}
-	node, err := ioutil.ReadFile(fmt.Sprintf("%s/node.jks", certPath))
+	node, err := ioutil.ReadFile(filepath.Join(certPath, nodeKeyStore))
 	if err != nil {
 		return nil, err
 	}
-	sgadmin, err := ioutil.ReadFile(fmt.Sprintf("%s/sgadmin.jks", certPath))
+	sgadmin, err := ioutil.ReadFile(filepath.Join(certPath, sgAdminKeyStore))
 	if err != nil {
 		return nil, err
 	}
 
 	data := map[string][]byte{
-		"root.jks":    root,
-		"node.jks":    node,
-		"sgadmin.jks": sgadmin,
+		rootKeyStore:    root,
+		nodeKeyStore:    node,
+		sgAdminKeyStore: sgadmin,
 	}
 
 	if elasticsearch.Spec.EnableSSL {
@@ -147,13 +136,13 @@ func (c *Controller) createCertSecret(elasticsearch *api.Elasticsearch) (*core.S
 			return nil, err
 		}
 
-		client, err := ioutil.ReadFile(fmt.Sprintf("%s/client.jks", certPath))
+		client, err := ioutil.ReadFile(filepath.Join(certPath, clientKeyStore))
 		if err != nil {
 			return nil, err
 		}
 
-		data["root.pem"] = cert.EncodeCertPEM(caCert)
-		data["client.jks"] = client
+		data[rootCert] = cert.EncodeCertPEM(caCert)
+		data[clientKeyStore] = client
 	}
 
 	name := fmt.Sprintf("%v-cert", elasticsearch.OffshootName())
@@ -196,7 +185,7 @@ func (c *Controller) findDatabaseSecret(elasticsearch *api.Elasticsearch) (*core
 
 	if secret.Labels[api.LabelDatabaseKind] != api.ResourceKindElasticsearch ||
 		secret.Labels[api.LabelDatabaseName] != elasticsearch.Name {
-		return nil, fmt.Errorf(`intended secret "%v" already exists`, name)
+		return nil, fmt.Errorf(`intended secret "%v/%v" already exists`, elasticsearch.Namespace, name)
 	}
 
 	return secret, nil
@@ -220,9 +209,12 @@ CLUSTER_COMPOSITE_OPS_RO:
 
 CLUSTER_KUBEDB_SNAPSHOT:
   - "indices:data/read/scroll*"
+  - "cluster:monitor/main"
 
 INDICES_KUBEDB_SNAPSHOT:
   - "indices:admin/get"
+  - "indices:monitor/settings/get"
+  - "indices:admin/mappings/get"
 `
 
 var config = `
@@ -334,4 +326,25 @@ func (c *Controller) createDatabaseSecret(elasticsearch *api.Elasticsearch) (*co
 	return &core.SecretVolumeSource{
 		SecretName: secret.Name,
 	}, nil
+}
+
+// This is done to fix 0.8.0 -> 0.9.0 upgrade due to
+// https://github.com/kubedb/elasticsearch/pull/181/files#diff-10ddaf307bbebafda149db10a28b9c24R23 commit
+func (c *Controller) upgradeDatabaseSecret(elasticsearch *api.Elasticsearch) error {
+	meta := metav1.ObjectMeta{
+		Name:      elasticsearch.Spec.DatabaseSecret.SecretName,
+		Namespace: elasticsearch.Namespace,
+	}
+
+	_, _, err := core_util.CreateOrPatchSecret(c.Client, meta, func(in *core.Secret) *core.Secret {
+		in.StringData = make(map[string]string)
+		if _, ok := in.Data[KeyAdminUserName]; !ok {
+			in.StringData[KeyAdminUserName] = AdminUser
+		}
+		if _, ok := in.Data[KeyReadAllUserName]; !ok {
+			in.StringData[KeyReadAllUserName] = ReadAllUser
+		}
+		return in
+	})
+	return err
 }

@@ -50,12 +50,17 @@ func (m MySQL) ServiceName() string {
 	return m.OffshootName()
 }
 
+// Snapshot service account name.
+func (m MySQL) SnapshotSAName() string {
+	return fmt.Sprintf("%v-snapshot", m.OffshootName())
+}
+
 type mysqlApp struct {
 	*MySQL
 }
 
 func (r mysqlApp) Name() string {
-	return fmt.Sprintf("kubedb:%s:%s:%s", ResourceSingularMySQL, r.MySQL.Namespace, r.MySQL.Name)
+	return r.MySQL.Name
 }
 
 func (r mysqlApp) Type() appcat.AppType {

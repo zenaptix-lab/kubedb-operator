@@ -22,6 +22,17 @@ var (
 	NodeRoleMaster = "node.role.master"
 	NodeRoleClient = "node.role.client"
 	NodeRoleData   = "node.role.data"
+
+	defaultClientPort = core.ServicePort{
+		Name:       api.ElasticsearchRestPortName,
+		Port:       api.ElasticsearchRestPort,
+		TargetPort: intstr.FromString(api.ElasticsearchRestPortName),
+	}
+	defaultPeerPort = core.ServicePort{
+		Name:       api.ElasticsearchNodePortName,
+		Port:       api.ElasticsearchNodePort,
+		TargetPort: intstr.FromString(api.ElasticsearchNodePortName),
+	}
 )
 
 func (c *Controller) ensureService(elasticsearch *api.Elasticsearch) (kutil.VerbType, error) {
@@ -33,14 +44,6 @@ func (c *Controller) ensureService(elasticsearch *api.Elasticsearch) (kutil.Verb
 	// create database Service
 	vt1, err := c.createService(elasticsearch)
 	if err != nil {
-		c.recorder.Eventf(
-			elasticsearch,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to createOrPatch Service. Reason: %v",
-			err,
-		)
-
 		return kutil.VerbUnchanged, err
 	} else if vt1 != kutil.VerbUnchanged {
 		c.recorder.Eventf(
@@ -61,14 +64,6 @@ func (c *Controller) ensureService(elasticsearch *api.Elasticsearch) (kutil.Verb
 	// create database Service
 	vt2, err := c.createMasterService(elasticsearch)
 	if err != nil {
-		c.recorder.Eventf(
-			elasticsearch,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to createOrPatch Service. Reason: %v",
-			err,
-		)
-
 		return kutil.VerbUnchanged, err
 	} else if vt2 != kutil.VerbUnchanged {
 		c.recorder.Eventf(
@@ -100,7 +95,7 @@ func (c *Controller) checkService(elasticsearch *api.Elasticsearch, name string)
 
 	if service.Labels[api.LabelDatabaseKind] != api.ResourceKindElasticsearch ||
 		service.Labels[api.LabelDatabaseName] != elasticsearch.Name {
-		return fmt.Errorf(`intended service "%v" already exists`, name)
+		return fmt.Errorf(`intended service "%v/%v" already exists`, elasticsearch.Namespace, name)
 	}
 
 	return nil
@@ -125,13 +120,7 @@ func (c *Controller) createService(elasticsearch *api.Elasticsearch) (kutil.Verb
 		in.Spec.Selector = elasticsearch.OffshootSelectors()
 		in.Spec.Selector[NodeRoleClient] = "set"
 		in.Spec.Ports = ofst.MergeServicePorts(
-			core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{
-				{
-					Name:       api.ElasticsearchRestPortName,
-					Port:       api.ElasticsearchRestPort,
-					TargetPort: intstr.FromString(api.ElasticsearchRestPortName),
-				},
-			}),
+			core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{defaultClientPort}),
 			elasticsearch.Spec.ServiceTemplate.Spec.Ports,
 		)
 
@@ -171,13 +160,7 @@ func (c *Controller) createMasterService(elasticsearch *api.Elasticsearch) (kuti
 
 		in.Spec.Selector = elasticsearch.OffshootSelectors()
 		in.Spec.Selector[NodeRoleMaster] = "set"
-		in.Spec.Ports = core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{
-			{
-				Name:       api.ElasticsearchNodePortName,
-				Port:       api.ElasticsearchNodePort,
-				TargetPort: intstr.FromString(api.ElasticsearchNodePortName),
-			},
-		})
+		in.Spec.Ports = core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{defaultPeerPort})
 		return in
 	})
 	return ok, err
@@ -220,13 +203,6 @@ func (c *Controller) ensureStatsService(elasticsearch *api.Elasticsearch) (kutil
 		return in
 	})
 	if err != nil {
-		c.recorder.Eventf(
-			elasticsearch,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to reconcile stats service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt != kutil.VerbUnchanged {
 		c.recorder.Eventf(

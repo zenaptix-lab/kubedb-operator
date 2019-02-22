@@ -35,13 +35,6 @@ func (c *Controller) ensureDeployment(memcached *api.Memcached) (kutil.VerbType,
 	// Check Deployment Pod status
 	if vt != kutil.VerbUnchanged {
 		if err := app_util.WaitUntilDeploymentReady(c.Client, deployment.ObjectMeta); err != nil {
-			c.recorder.Eventf(
-				memcached,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToStart,
-				`Failed to CreateOrPatch StatefulSet. Reason: %v`,
-				err,
-			)
 			return kutil.VerbUnchanged, err
 		}
 		c.recorder.Eventf(
@@ -66,7 +59,7 @@ func (c *Controller) checkDeployment(memcached *api.Memcached) error {
 	}
 	if deployment.Labels[api.LabelDatabaseKind] != api.ResourceKindMemcached ||
 		deployment.Labels[api.LabelDatabaseName] != memcached.Name {
-		return fmt.Errorf(`intended deployment "%v" already exists`, memcached.OffshootName())
+		return fmt.Errorf(`intended deployment "%v/%v" already exists`, memcached.Namespace, memcached.OffshootName())
 	}
 	return nil
 }
@@ -120,10 +113,10 @@ func (c *Controller) createDeployment(memcached *api.Memcached) (*apps.Deploymen
 		if memcached.GetMonitoringVendor() == mona.VendorPrometheus {
 			in.Spec.Template.Spec.Containers = core_util.UpsertContainer(in.Spec.Template.Spec.Containers, core.Container{
 				Name: "exporter",
-				Args: []string{
+				Args: append([]string{
 					fmt.Sprintf("--web.listen-address=:%v", memcached.Spec.Monitor.Prometheus.Port),
 					fmt.Sprintf("--web.telemetry-path=%v", memcached.StatsService().Path()),
-				},
+				}, memcached.Spec.Monitor.Args...),
 				Image:           memcachedVersion.Spec.Exporter.Image,
 				ImagePullPolicy: core.PullIfNotPresent,
 				Ports: []core.ContainerPort{
@@ -133,7 +126,9 @@ func (c *Controller) createDeployment(memcached *api.Memcached) (*apps.Deploymen
 						ContainerPort: memcached.Spec.Monitor.Prometheus.Port,
 					},
 				},
-				Resources: memcached.Spec.Monitor.Resources,
+				Env:             memcached.Spec.Monitor.Env,
+				Resources:       memcached.Spec.Monitor.Resources,
+				SecurityContext: memcached.Spec.Monitor.SecurityContext,
 			})
 		}
 		in = upsertUserEnv(in, memcached)
@@ -149,6 +144,10 @@ func (c *Controller) createDeployment(memcached *api.Memcached) (*apps.Deploymen
 		in.Spec.Template.Spec.PriorityClassName = memcached.Spec.PodTemplate.Spec.PriorityClassName
 		in.Spec.Template.Spec.Priority = memcached.Spec.PodTemplate.Spec.Priority
 		in.Spec.Template.Spec.SecurityContext = memcached.Spec.PodTemplate.Spec.SecurityContext
+
+		if c.EnableRBAC {
+			in.Spec.Template.Spec.ServiceAccountName = memcached.OffshootName()
+		}
 
 		in.Spec.Strategy = memcached.Spec.UpdateStrategy
 

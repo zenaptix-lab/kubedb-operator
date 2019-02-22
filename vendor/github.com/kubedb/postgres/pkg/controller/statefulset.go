@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/appscode/go/log"
@@ -10,9 +11,11 @@ import (
 	app_util "github.com/appscode/kutil/apps/v1"
 	core_util "github.com/appscode/kutil/core/v1"
 	meta_util "github.com/appscode/kutil/meta"
+	"github.com/appscode/kutil/tools/analytics"
 	catalog "github.com/kubedb/apimachinery/apis/catalog/v1alpha1"
 	api "github.com/kubedb/apimachinery/apis/kubedb/v1alpha1"
 	"github.com/kubedb/apimachinery/pkg/eventer"
+	"github.com/kubedb/postgres/pkg/leader_election"
 	apps "k8s.io/api/apps/v1"
 	core "k8s.io/api/core/v1"
 	kerr "k8s.io/apimachinery/pkg/api/errors"
@@ -64,7 +67,17 @@ func (c *Controller) ensureStatefulSet(
 		in.Spec.Template.Spec.Containers = core_util.UpsertContainer(
 			in.Spec.Template.Spec.Containers,
 			core.Container{
-				Name:           api.ResourceSingularPostgres,
+				Name: api.ResourceSingularPostgres,
+				Args: append([]string{
+					"leader_election",
+					fmt.Sprintf(`--enable-analytics=%v`, c.EnableAnalytics),
+				}, c.LoggerOptions.ToFlags()...),
+				Env: []core.EnvVar{
+					{
+						Name:  analytics.Key,
+						Value: c.AnalyticsClientID,
+					},
+				},
 				Image:          postgresVersion.Spec.DB.Image,
 				Resources:      postgres.Spec.PodTemplate.Spec.Resources,
 				LivenessProbe:  postgres.Spec.PodTemplate.Spec.LivenessProbe,
@@ -115,7 +128,6 @@ func (c *Controller) ensureStatefulSet(
 		if c.EnableRBAC {
 			in.Spec.Template.Spec.ServiceAccountName = postgres.OffshootName()
 		}
-
 		in.Spec.UpdateStrategy = postgres.Spec.UpdateStrategy
 
 		return in
@@ -128,14 +140,6 @@ func (c *Controller) ensureStatefulSet(
 	if vt == kutil.VerbCreated || vt == kutil.VerbPatched {
 		// Check StatefulSet Pod status
 		if err := c.CheckStatefulSetPodStatus(statefulSet); err != nil {
-			c.recorder.Eventf(
-				postgres,
-				core.EventTypeWarning,
-				eventer.EventReasonFailedToStart,
-				`Failed to be running after StatefulSet %v. Reason: %v`,
-				vt,
-				err,
-			)
 			return kutil.VerbUnchanged, err
 		}
 
@@ -185,21 +189,47 @@ func (c *Controller) ensureCombinedNode(postgres *api.Postgres, postgresVersion 
 		},
 	}
 
+	if postgres.Spec.LeaderElection != nil {
+		envList = append(envList, []core.EnvVar{
+			{
+				Name:  leader_election.LeaseDurationEnv,
+				Value: strconv.Itoa(int(postgres.Spec.LeaderElection.LeaseDurationSeconds)),
+			},
+			{
+				Name:  leader_election.RenewDeadlineEnv,
+				Value: strconv.Itoa(int(postgres.Spec.LeaderElection.RenewDeadlineSeconds)),
+			},
+			{
+				Name:  leader_election.RetryPeriodEnv,
+				Value: strconv.Itoa(int(postgres.Spec.LeaderElection.RetryPeriodSeconds)),
+			},
+		}...)
+	}
+
 	if postgres.Spec.Archiver != nil {
 		archiverStorage := postgres.Spec.Archiver.Storage
 		if archiverStorage != nil {
 			envList = append(envList,
-				[]core.EnvVar{
-					{
-						Name:  "ARCHIVE",
-						Value: "wal-g",
-					},
-					{
+				core.EnvVar{
+					Name:  "ARCHIVE",
+					Value: "wal-g",
+				},
+			)
+			if archiverStorage.S3 != nil {
+				envList = append(envList,
+					core.EnvVar{
 						Name:  "ARCHIVE_S3_PREFIX",
 						Value: fmt.Sprintf("s3://%v/%v", archiverStorage.S3.Bucket, WalDataDir(postgres)),
 					},
-				}...,
-			)
+				)
+			} else if archiverStorage.GCS != nil {
+				envList = append(envList,
+					core.EnvVar{
+						Name:  "ARCHIVE_GS_PREFIX",
+						Value: fmt.Sprintf("gs://%v/%v", archiverStorage.GCS.Bucket, WalDataDir(postgres)),
+					},
+				)
+			}
 		}
 	}
 
@@ -227,7 +257,7 @@ func (c *Controller) checkStatefulSet(postgres *api.Postgres) error {
 
 	if statefulSet.Labels[api.LabelDatabaseKind] != api.ResourceKindPostgres ||
 		statefulSet.Labels[api.LabelDatabaseName] != name {
-		return fmt.Errorf(`intended statefulSet "%v" already exists`, name)
+		return fmt.Errorf(`intended statefulSet "%v/%v" already exists`, postgres.Namespace, name)
 	}
 
 	return nil
@@ -323,7 +353,7 @@ func (c *Controller) upsertMonitoringContainer(statefulSet *apps.StatefulSet, po
 			Name: "exporter",
 			Args: append([]string{
 				"--log.level=info",
-			}),
+			}, postgres.Spec.Monitor.Args...),
 			Image:           postgresVersion.Spec.Exporter.Image,
 			ImagePullPolicy: core.PullIfNotPresent,
 			Ports: []core.ContainerPort{
@@ -333,7 +363,9 @@ func (c *Controller) upsertMonitoringContainer(statefulSet *apps.StatefulSet, po
 					ContainerPort: int32(api.PrometheusExporterPortNumber),
 				},
 			},
-			Resources: postgres.Spec.Monitor.Resources,
+			Env:             postgres.Spec.Monitor.Env,
+			Resources:       postgres.Spec.Monitor.Resources,
+			SecurityContext: postgres.Spec.Monitor.SecurityContext,
 		}
 
 		envList := []core.EnvVar{
@@ -543,16 +575,27 @@ func upsertCustomConfig(statefulSet *apps.StatefulSet, postgres *api.Postgres) *
 }
 
 func walRecoveryConfig(wal *api.PostgresWALSourceSpec) []core.EnvVar {
-
 	envList := []core.EnvVar{
 		{
 			Name:  "RESTORE",
 			Value: "true",
 		},
-		{
-			Name:  "RESTORE_S3_PREFIX",
-			Value: fmt.Sprintf("s3://%v/%v", wal.S3.Bucket, wal.S3.Prefix),
-		},
+	}
+
+	if wal.S3 != nil {
+		envList = append(envList,
+			core.EnvVar{
+				Name:  "RESTORE_S3_PREFIX",
+				Value: fmt.Sprintf("s3://%v/%v", wal.S3.Bucket, wal.S3.Prefix),
+			},
+		)
+	} else if wal.GCS != nil {
+		envList = append(envList,
+			core.EnvVar{
+				Name:  "RESTORE_GS_PREFIX",
+				Value: fmt.Sprintf("gs://%v/%v", wal.GCS.Bucket, wal.GCS.Prefix),
+			},
+		)
 	}
 
 	if wal.PITR != nil {

@@ -8,8 +8,8 @@ import (
 	core_util "github.com/appscode/kutil/core/v1"
 	api "github.com/kubedb/apimachinery/apis/kubedb/v1alpha1"
 	"github.com/kubedb/apimachinery/pkg/eventer"
-	"k8s.io/api/core/v1"
 	core "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	kerr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -22,29 +22,29 @@ import (
 
 const TolerateUnreadyEndpointsAnnotation = "service.alpha.kubernetes.io/tolerate-unready-endpoints"
 
-func (c *Controller) CreateClientService(cl *Cluster) error {
-	ports := []v1.ServicePort{{
+var (
+	defaultClientPort = v1.ServicePort{
 		Name:       "client",
 		Port:       EtcdClientPort,
 		TargetPort: intstr.FromInt(EtcdClientPort),
 		Protocol:   v1.ProtocolTCP,
-	}}
+	}
+	defaultPeerPort = v1.ServicePort{
+		Name:       "peer",
+		Port:       EtcdPeerPort,
+		TargetPort: intstr.FromInt(EtcdPeerPort),
+		Protocol:   v1.ProtocolTCP,
+	}
+)
+
+func (c *Controller) CreateClientService(cl *Cluster) error {
+	ports := []v1.ServicePort{defaultClientPort}
 
 	return createService(c.Controller.Client, cl.cluster.ClientServiceName(), "", ports, cl.cluster)
 }
 
 func (c *Controller) CreatePeerService(cl *Cluster) error {
-	ports := []v1.ServicePort{{
-		Name:       "client",
-		Port:       EtcdClientPort,
-		TargetPort: intstr.FromInt(EtcdClientPort),
-		Protocol:   v1.ProtocolTCP,
-	}, {
-		Name:       "peer",
-		Port:       2380,
-		TargetPort: intstr.FromInt(2380),
-		Protocol:   v1.ProtocolTCP,
-	}}
+	ports := []v1.ServicePort{defaultClientPort, defaultPeerPort}
 
 	return createService(c.Controller.Client, cl.cluster.PeerServiceName(), v1.ClusterIPNone, ports, cl.cluster)
 }

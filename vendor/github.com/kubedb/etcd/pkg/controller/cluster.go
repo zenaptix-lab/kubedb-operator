@@ -15,7 +15,7 @@ import (
 	"github.com/kubedb/etcd/pkg/util"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -181,6 +181,9 @@ func (c *Controller) run(cluster *Cluster) {
 	cluster.status.Phase = api.DatabasePhaseRunning
 	if err := c.updateCRStatus(cluster); err != nil {
 		cluster.logger.Warningf("update initial CR status failed: %v", err)
+	}
+	if _, err := c.ensureAppBinding(cluster.cluster); err != nil {
+		log.Errorln(err)
 	}
 
 	var rerr error

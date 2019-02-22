@@ -96,7 +96,7 @@ func (a *ElasticsearchValidator) Admit(req *admission.AdmissionRequest) *admissi
 				}
 				return hookapi.StatusInternalServerError(err)
 			} else if err == nil && obj.Spec.TerminationPolicy == api.TerminationPolicyDoNotTerminate {
-				return hookapi.StatusBadRequest(fmt.Errorf(`elasticsearch "%s" can't be paused. To delete, change spec.terminationPolicy`, req.Name))
+				return hookapi.StatusBadRequest(fmt.Errorf(`elasticsearch "%v/%v" can't be paused. To delete, change spec.terminationPolicy`, req.Namespace, req.Name))
 			}
 		}
 	default:
@@ -113,6 +113,7 @@ func (a *ElasticsearchValidator) Admit(req *admission.AdmissionRequest) *admissi
 
 			elasticsearch := obj.(*api.Elasticsearch).DeepCopy()
 			oldElasticsearch := oldObject.(*api.Elasticsearch).DeepCopy()
+			oldElasticsearch.SetDefaults()
 			// Allow changing Database Secret only if there was no secret have set up yet.
 			if oldElasticsearch.Spec.DatabaseSecret == nil {
 				oldElasticsearch.Spec.DatabaseSecret = elasticsearch.Spec.DatabaseSecret
@@ -288,7 +289,7 @@ func matchWithDormantDatabase(extClient cs.Interface, elasticsearch *api.Elastic
 
 	// Check DatabaseKind
 	if value, _ := meta_util.GetStringValue(dormantDb.Labels, api.LabelDatabaseKind); value != api.ResourceKindElasticsearch {
-		return errors.New(fmt.Sprintf(`invalid Elasticsearch: "%v". Exists DormantDatabase "%v" of different Kind`, elasticsearch.Name, dormantDb.Name))
+		return errors.New(fmt.Sprintf(`invalid Elasticsearch: "%v/%v". Exists DormantDatabase "%v/%v" of different Kind`, elasticsearch.Namespace, elasticsearch.Name, dormantDb.Namespace, dormantDb.Name))
 	}
 
 	// Check Origin Spec
@@ -356,7 +357,6 @@ var preconditionSpecFields = []string{
 	"spec.storage",
 	"spec.init",
 	"spec.podTemplate.spec.nodeSelector",
-	"spec.podTemplate.spec.env",
 }
 
 func preconditionFailedError(kind string) error {

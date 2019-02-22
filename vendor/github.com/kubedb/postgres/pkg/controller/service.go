@@ -27,6 +27,14 @@ const (
 	PostgresPortName = "api"
 )
 
+var (
+	defaultDBPort = core.ServicePort{
+		Name:       PostgresPortName,
+		Port:       PostgresPort,
+		TargetPort: intstr.FromString(PostgresPortName),
+	}
+)
+
 func (c *Controller) ensureService(postgres *api.Postgres) (kutil.VerbType, error) {
 	// Check if service name exists
 	err := c.checkService(postgres, postgres.OffshootName())
@@ -36,13 +44,6 @@ func (c *Controller) ensureService(postgres *api.Postgres) (kutil.VerbType, erro
 	// create database Service
 	vt1, err := c.createService(postgres)
 	if err != nil {
-		c.recorder.Eventf(
-			postgres,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to createOrPatch Service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt1 != kutil.VerbUnchanged {
 		c.recorder.Eventf(
@@ -62,13 +63,6 @@ func (c *Controller) ensureService(postgres *api.Postgres) (kutil.VerbType, erro
 	// create database Service
 	vt2, err := c.createReplicasService(postgres)
 	if err != nil {
-		c.recorder.Eventf(
-			postgres,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to createOrPatch Service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt2 != kutil.VerbUnchanged {
 		c.recorder.Eventf(
@@ -100,7 +94,7 @@ func (c *Controller) checkService(postgres *api.Postgres, name string) error {
 
 	if service.Labels[api.LabelDatabaseKind] != api.ResourceKindPostgres ||
 		service.Labels[api.LabelDatabaseName] != postgres.Name {
-		return fmt.Errorf(`intended service "%v" already exists`, name)
+		return fmt.Errorf(`intended service "%v/%v" already exists`, postgres.Namespace, name)
 	}
 
 	return nil
@@ -146,13 +140,7 @@ func (c *Controller) createService(postgres *api.Postgres) (kutil.VerbType, erro
 
 func upsertServicePort(in *core.Service, postgres *api.Postgres) []core.ServicePort {
 	return ofst.MergeServicePorts(
-		core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{
-			{
-				Name:       PostgresPortName,
-				Port:       PostgresPort,
-				TargetPort: intstr.FromString(PostgresPortName),
-			},
-		}),
+		core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{defaultDBPort}),
 		postgres.Spec.ServiceTemplate.Spec.Ports,
 	)
 }
@@ -170,12 +158,36 @@ func (c *Controller) createReplicasService(postgres *api.Postgres) (kutil.VerbTy
 
 	_, ok, err := core_util.CreateOrPatchService(c.Client, meta, func(in *core.Service) *core.Service {
 		core_util.EnsureOwnerReference(&in.ObjectMeta, ref)
-		in.Labels = postgres.OffshootSelectors()
+		in.Labels = postgres.OffshootLabels()
+		in.Annotations = postgres.Spec.ReplicaServiceTemplate.Annotations
+
 		in.Spec.Selector = postgres.OffshootSelectors()
-		in.Spec.Ports = upsertServicePort(in, postgres)
+		in.Spec.Selector[NodeRole] = "replica"
+		in.Spec.Ports = upsertReplicaServicePort(in, postgres)
+
+		if postgres.Spec.ReplicaServiceTemplate.Spec.ClusterIP != "" {
+			in.Spec.ClusterIP = postgres.Spec.ReplicaServiceTemplate.Spec.ClusterIP
+		}
+		if postgres.Spec.ReplicaServiceTemplate.Spec.Type != "" {
+			in.Spec.Type = postgres.Spec.ReplicaServiceTemplate.Spec.Type
+		}
+		in.Spec.ExternalIPs = postgres.Spec.ReplicaServiceTemplate.Spec.ExternalIPs
+		in.Spec.LoadBalancerIP = postgres.Spec.ReplicaServiceTemplate.Spec.LoadBalancerIP
+		in.Spec.LoadBalancerSourceRanges = postgres.Spec.ReplicaServiceTemplate.Spec.LoadBalancerSourceRanges
+		in.Spec.ExternalTrafficPolicy = postgres.Spec.ReplicaServiceTemplate.Spec.ExternalTrafficPolicy
+		if postgres.Spec.ReplicaServiceTemplate.Spec.HealthCheckNodePort > 0 {
+			in.Spec.HealthCheckNodePort = postgres.Spec.ReplicaServiceTemplate.Spec.HealthCheckNodePort
+		}
 		return in
 	})
 	return ok, err
+}
+
+func upsertReplicaServicePort(in *core.Service, postgres *api.Postgres) []core.ServicePort {
+	return ofst.MergeServicePorts(
+		core_util.MergeServicePorts(in.Spec.Ports, []core.ServicePort{defaultDBPort}),
+		postgres.Spec.ReplicaServiceTemplate.Spec.Ports,
+	)
 }
 
 func (c *Controller) ensureStatsService(postgres *api.Postgres) (kutil.VerbType, error) {
@@ -215,13 +227,6 @@ func (c *Controller) ensureStatsService(postgres *api.Postgres) (kutil.VerbType,
 		return in
 	})
 	if err != nil {
-		c.recorder.Eventf(
-			ref,
-			core.EventTypeWarning,
-			eventer.EventReasonFailedToCreate,
-			"Failed to reconcile stats service. Reason: %v",
-			err,
-		)
 		return kutil.VerbUnchanged, err
 	} else if vt != kutil.VerbUnchanged {
 		c.recorder.Eventf(

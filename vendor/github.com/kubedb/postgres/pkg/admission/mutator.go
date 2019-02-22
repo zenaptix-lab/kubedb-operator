@@ -130,7 +130,7 @@ func setDefaultsFromDormantDB(extClient cs.Interface, postgres *api.Postgres) er
 
 	// Check DatabaseKind
 	if value, _ := meta_util.GetStringValue(dormantDb.Labels, api.LabelDatabaseKind); value != api.ResourceKindPostgres {
-		return errors.New(fmt.Sprintf(`invalid Postgres: "%v". Exists DormantDatabase "%v" of different Kind`, postgres.Name, dormantDb.Name))
+		return errors.New(fmt.Sprintf(`invalid Postgres: "%v/%v". Exists DormantDatabase "%v/%v" of different Kind`, postgres.Namespace, postgres.Name, dormantDb.Namespace, dormantDb.Name))
 	}
 
 	// Check Origin Spec
@@ -157,6 +157,14 @@ func setDefaultsFromDormantDB(extClient cs.Interface, postgres *api.Postgres) er
 		postgres.Spec.BackupSchedule = ddbOriginSpec.BackupSchedule
 	} else {
 		ddbOriginSpec.BackupSchedule = postgres.Spec.BackupSchedule
+	}
+
+	// If LeaderElectionConfig of new object is not given,
+	// Take configs from Dormant
+	if postgres.Spec.LeaderElection == nil {
+		postgres.Spec.LeaderElection = ddbOriginSpec.LeaderElection
+	} else {
+		ddbOriginSpec.LeaderElection = postgres.Spec.LeaderElection
 	}
 
 	// Skip checking UpdateStrategy

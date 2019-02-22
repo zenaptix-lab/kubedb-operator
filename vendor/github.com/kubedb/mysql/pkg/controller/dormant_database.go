@@ -33,6 +33,28 @@ func (c *Controller) WaitUntilPaused(drmn *api.DormantDatabase) error {
 		return err
 	}
 
+	if err := c.waitUntilRBACStuffDeleted(db); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Controller) waitUntilRBACStuffDeleted(mysql *api.MySQL) error {
+	// Delete ServiceAccount
+	if err := core_util.WaitUntillServiceAccountDeleted(c.Client, mysql.ObjectMeta); err != nil {
+		return err
+	}
+
+	// Delete Snapshot ServiceAccount
+	snapSAMeta := metav1.ObjectMeta{
+		Name:      mysql.SnapshotSAName(),
+		Namespace: mysql.Namespace,
+	}
+	if err := core_util.WaitUntillServiceAccountDeleted(c.Client, snapSAMeta); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -43,11 +65,9 @@ func (c *Controller) WipeOutDatabase(drmn *api.DormantDatabase) error {
 	if rerr != nil {
 		return rerr
 	}
-
 	if err := c.wipeOutDatabase(drmn.ObjectMeta, drmn.GetDatabaseSecrets(), ref); err != nil {
 		return errors.Wrap(err, "error in wiping out database.")
 	}
-
 	return nil
 }
 
@@ -135,7 +155,6 @@ func (c *Controller) secretsUsedByPeers(meta metav1.ObjectMeta) (sets.String, er
 			secretUsed.Insert(my.Spec.GetSecrets()...)
 		}
 	}
-
 	labelMap := map[string]string{
 		api.LabelDatabaseKind: api.ResourceKindMySQL,
 	}
